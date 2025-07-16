@@ -78,6 +78,22 @@ def set_global_seed(seed=SEED):
 
 set_global_seed()
 
+import subprocess
+
+def git_commit_and_push(file_path, message):
+    try:
+        subprocess.run(["git", "add", file_path], check=True)
+        diff = subprocess.run(["git", "diff", "--cached", "--quiet"])
+        if diff.returncode != 0:
+            subprocess.run(["git", "config", "--global", "user.name", "github-actions"], check=True)
+            subprocess.run(["git", "config", "--global", "user.email", "github-actions@github.com"], check=True)
+            subprocess.run(["git", "commit", "-m", message], check=True)
+            subprocess.run(["git", "push"], check=True)
+        else:
+            print(f"[INFO] No changes in {file_path}")
+    except Exception as e:
+        print(f"[WARNING] Git commit/push failed: {e}")
+
 def calculate_reward(selected_numbers, winning_numbers, cycle_scores):
     match_count = len(set(selected_numbers) & set(winning_numbers))
     avg_cycle_score = np.mean([cycle_scores.get(n, 999) for n in selected_numbers])
@@ -2718,6 +2734,9 @@ def bulk_predict_all_past_draws():
         result_df.to_csv(pred_path, index=False, encoding="utf-8-sig")
         print(f"[INFO] {latest_date.strftime('%Y-%m-%d')} の予測を保存しました")
 
+        # ✅ 保存直後にGitへコミット＆プッシュ
+        git_commit_and_push(pred_path, "Auto update Numbers3_predictions.csv [skip ci]")
+        
         try:
             evaluate_and_summarize_predictions(
                 pred_file=pred_path,
