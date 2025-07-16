@@ -1,4 +1,4 @@
-name: Auto Scrape Numbers3_v3
+name: Auto Scrape Numbers3_v4
 
 on:
   schedule:
@@ -73,7 +73,7 @@ jobs:
       - name: Run predictor script
         run: xvfb-run -a python numbers3_predictor.py
 
-      - name: Push Numbers3_predictions.csv every hour up to 3 times
+      - name: Push Numbers3_predictions.csv every hour up to 8 times
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
