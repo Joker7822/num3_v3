@@ -25,13 +25,13 @@ jobs:
             libglib2.0-0 libnss3 libxi6 libxcomposite1 libxss1 \
             libatk-bridge2.0-0 libgtk-3-0 libasound2t64
 
-          # Install Chrome 138
+          # Install Chrome
           wget https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chrome-linux64.zip
           unzip chrome-linux64.zip
           sudo mv chrome-linux64 /opt/chrome
           sudo ln -sf /opt/chrome/chrome /usr/bin/google-chrome
 
-          # Install ChromeDriver 138
+          # Install ChromeDriver
           wget https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chromedriver-linux64.zip
           unzip chromedriver-linux64.zip
           sudo mv chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
@@ -73,26 +73,37 @@ jobs:
       - name: Run predictor script
         run: xvfb-run -a python numbers3_predictor.py
 
-      - name: Commit and push Numbers3_predictions.csv immediately
+      - name: Push Numbers3_predictions.csv every hour up to 3 times
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
           git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
-          git fetch origin
-          git stash --include-untracked
-          git checkout ${{ github.ref_name }}
-          git pull --rebase origin ${{ github.ref_name }}
-          git stash pop || true
 
-          git add Numbers3_predictions.csv
-          if git diff --cached --quiet; then
-            echo "No changes to Numbers3_predictions.csv"
-          else
-            git commit -m "Auto update Numbers3_predictions.csv [skip ci]"
-            git push origin HEAD:${{ github.ref_name }}
-          fi
+          for i in 1 2 3
+          do
+            echo "[INFO] Hourly Push Attempt $i"
+
+            git fetch origin
+            git stash --include-untracked
+            git checkout ${{ github.ref_name }}
+            git pull --rebase origin ${{ github.ref_name }}
+            git stash pop || true
+
+            git add Numbers3_predictions.csv
+            if git diff --cached --quiet; then
+              echo "No changes to Numbers3_predictions.csv"
+            else
+              git commit -m "Hourly update Numbers3_predictions.csv [skip ci]"
+              git push origin HEAD:${{ github.ref_name }}
+            fi
+
+            if [ $i -lt 3 ]; then
+              echo "Sleeping 1 hour before next push..."
+              sleep 3600
+            fi
+          done
 
       - name: Commit and push remaining prediction results
         env:
