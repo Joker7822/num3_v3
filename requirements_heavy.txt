@@ -10,3 +10,4 @@ onnxruntime
 autogluon
 stable_baselines3
 tabpfn
+rtdl-num-embeddings
