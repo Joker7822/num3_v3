@@ -9,3 +9,4 @@ neuralforecast
 onnxruntime
 autogluon
 stable_baselines3
+tabpfn
