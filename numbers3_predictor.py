@@ -62,6 +62,7 @@ from datetime import datetime
 from collections import Counter
 import torch.nn.functional as F
 import math
+import subprocess
 
 # Windows環境のイベントループポリシーを設定
 if platform.system() == "Windows":
@@ -3021,6 +3022,34 @@ def generate_progress_dashboard_text(eval_file="evaluation_result.csv", output_t
     except Exception as e:
         print(f"[ERROR] ダッシュボード出力に失敗しました: {e}")
 
+def push_if_model_updated(model_patterns=["*.pth"], commit_msg="Auto update model files [skip ci]"):
+    """
+    指定されたパターンのモデルファイルが変更された場合、自動でGitHubへコミット＆プッシュ
+    """
+    print("[INFO] モデルファイルの変更を確認中...")
+
+    # git add
+    for pattern in model_patterns:
+        subprocess.run(["git", "add", pattern], check=False)
+
+    # 差分があるかチェック
+    diff_result = subprocess.run(["git", "diff", "--cached", "--quiet"])
+    if diff_result.returncode == 0:
+        print("[INFO] モデルファイルに変更はありません。")
+        return
+
+    print("[INFO] モデルファイルの変更を検知 → コミット＆プッシュを実行")
+
+    # git config
+    subprocess.run(["git", "config", "--global", "user.name", "github-actions"], check=True)
+    subprocess.run(["git", "config", "--global", "user.email", "github-actions@github.com"], check=True)
+
+    # commit & push
+    subprocess.run(["git", "commit", "-m", commit_msg], check=True)
+    subprocess.run(["git", "push"], check=True)
+
+    print("[INFO] モデルファイルをGitHubにプッシュ完了")
+
 def bulk_predict_all_past_draws():
     try:
         df = pd.read_csv("numbers3.csv")
@@ -3084,7 +3113,6 @@ def bulk_predict_all_past_draws():
         if latest_date.date() in predicted_dates:
             continue
 
-        # === 各モデルから予測を収集 ===
         all_groups = {
             "PPO": [(p[0], p[1], "PPO") for p in ppo_multiagent_predict(sub_data)],
             "Diffusion": [(p[0], p[1], "Diffusion") for p in diffusion_generate_predictions(sub_data, 5)],
@@ -3098,7 +3126,6 @@ def bulk_predict_all_past_draws():
         for model_preds in all_groups.values():
             all_candidates.extend(model_preds)
 
-        # ✅ 自己予測の追加
         true_data = sub_data["本数字"].tolist()
         self_preds = load_self_predictions(min_match_threshold=2, true_data=true_data, return_with_freq=False)
         if self_preds:
@@ -3106,10 +3133,7 @@ def bulk_predict_all_past_draws():
                 all_candidates.append((list(pred), 0.95, "Self"))
             print(f"[INFO] 自己予測 {len(self_preds[:5])} 件を候補に追加")
 
-        # ✅ 完全一致構成の追加
         all_candidates = force_include_exact_match(all_candidates, actual_numbers)
-
-        # === 候補の加工と評価 ===
         all_candidates = randomly_shuffle_predictions(all_candidates)
         all_candidates = force_one_straight(all_candidates, [actual_numbers])
         all_candidates = enforce_grade_structure(all_candidates)
@@ -3125,7 +3149,6 @@ def bulk_predict_all_past_draws():
         if not verified_predictions:
             continue
 
-        # === 出力保存 ===
         result = {"抽せん日": latest_date.strftime("%Y-%m-%d")}
         for j, pred in enumerate(verified_predictions[:5]):
             if len(pred) == 3:
@@ -3163,6 +3186,9 @@ def bulk_predict_all_past_draws():
         predicted_dates.add(latest_date.date())
 
     print("[INFO] 過去および最新の予測・評価処理が完了しました。")
+
+    # === 🔁 モデルファイルの更新があれば自動でコミット・プッシュ ===
+    push_if_model_updated(["*.pth", "models/*.pth"])
 
     try:
         generate_progress_dashboard_text()
