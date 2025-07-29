@@ -186,6 +186,26 @@ class CycleEnv(gym.Env):
         reward = max(0, 1 - (avg_cycle / 50))
         return np.zeros(10, dtype=np.float32), reward, True, {}
 
+def train_tabm_model(X_train, y_train, input_dim, device='cpu'):
+    model = TabMRegressor(input_dim=input_dim).to(device)
+    criterion = nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
+    X_tensor = torch.tensor(X_train, dtype=torch.float32).to(device)
+    y_tensor = torch.tensor(y_train, dtype=torch.float32).to(device)
+
+    model.train()
+    for epoch in range(100):
+        optimizer.zero_grad()
+        preds = model(X_tensor)
+        loss = criterion(preds, y_tensor)
+        loss.backward()
+        optimizer.step()
+        if epoch % 10 == 0:
+            print(f"[TabM] Epoch {epoch} Loss: {loss.item():.4f}")
+
+    return model
+
 class ProfitLotoEnv(gym.Env):
     def __init__(self, historical_numbers):
         super(ProfitLotoEnv, self).__init__()
