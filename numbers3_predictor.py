@@ -51,7 +51,6 @@ import gym
 import sys
 import os
 import random
-from tabm import TabMRegressor  # 実際のクラス名に置き換え
 from sklearn.metrics import precision_score, recall_score, f1_score
 from neuralforecast.models import TFT
 from neuralforecast import NeuralForecast
@@ -185,26 +184,6 @@ class CycleEnv(gym.Env):
         avg_cycle = np.mean([self.cycle_scores.get(n, 999) for n in selected])
         reward = max(0, 1 - (avg_cycle / 50))
         return np.zeros(10, dtype=np.float32), reward, True, {}
-
-def train_tabm_model(X_train, y_train, input_dim, device='cpu'):
-    model = TabMRegressor(input_dim=input_dim).to(device)
-    criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-
-    X_tensor = torch.tensor(X_train, dtype=torch.float32).to(device)
-    y_tensor = torch.tensor(y_train, dtype=torch.float32).to(device)
-
-    model.train()
-    for epoch in range(100):
-        optimizer.zero_grad()
-        preds = model(X_tensor)
-        loss = criterion(preds, y_tensor)
-        loss.backward()
-        optimizer.step()
-        if epoch % 10 == 0:
-            print(f"[TabM] Epoch {epoch} Loss: {loss.item():.4f}")
-
-    return model
 
 class ProfitLotoEnv(gym.Env):
     def __init__(self, historical_numbers):
@@ -2931,6 +2910,41 @@ def weekly_retrain_all_models():
     train_transformer_with_cycle_attention(df, model_path="transformer_model.pth", epochs=50)
 
     print("[INFO] ✅ 土曜日の週次再学習完了")
+def train_tabm_and_predict(sub_df, num_predictions=5, device='cpu'):
+    from tabm import TabMRegressor  # 実際のクラス名に合わせて調整
+
+    X_scaled, y, _ = preprocess_data(sub_df)
+    if X_scaled is None or y is None:
+        return []
+
+    input_dim = X_scaled.shape[1]
+    model = TabMRegressor(input_dim=input_dim).to(device)
+
+    X_tensor = torch.tensor(X_scaled, dtype=torch.float32).to(device)
+    y_tensor = torch.tensor([np.mean(n) for n in y], dtype=torch.float32).to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    criterion = nn.MSELoss()
+
+    model.train()
+    for epoch in range(50):
+        optimizer.zero_grad()
+        output = model(X_tensor).squeeze()
+        loss = criterion(output, y_tensor)
+        loss.backward()
+        optimizer.step()
+
+    # 推論
+    model.eval()
+    with torch.no_grad():
+        preds = model(X_tensor).cpu().numpy()
+
+    results = []
+    for score in preds[-num_predictions:]:
+        top_digits = np.argsort(np.abs(score - np.arange(10)))[:3]  # 差が小さい順
+        results.append((sorted(top_digits.tolist()), 0.85))  # 仮の信頼度
+
+    return results
 
 def force_include_exact_match(predictions, actual_numbers):
     """必ず1件、完全一致構成を候補に追加（3等保証）"""
@@ -3076,7 +3090,8 @@ def bulk_predict_all_past_draws():
             "Diffusion": [(p[0], p[1], "Diffusion") for p in diffusion_generate_predictions(sub_data, 5)],
             "GPT": [(p[0], p[1], "GPT") for p in gpt_generate_predictions_with_memory_3(
                 decoder, encoder, sub_data["本数字"].tolist(), num_samples=5)],
-            "GAN": [(p[0], p[1], "GAN") for p in predict_with_gan(LotoGAN(), num_predictions=5)]
+            "GAN": [(p[0], p[1], "GAN") for p in predict_with_gan(LotoGAN(), num_predictions=5)],
+            "TabM": [(p[0], p[1], "TabM") for p in train_tabm_and_predict(sub_data, num_predictions=5)]
         }
 
         all_candidates = []
