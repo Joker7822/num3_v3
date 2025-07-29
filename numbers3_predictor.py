@@ -1282,9 +1282,20 @@ def calculate_candidate_score(struct_score, conf, cycle):
         0.1 * (1 - cycle / 100)     # ← 周期の影響を弱める
     )
 
-# 構造スコアと周期チェックの緩和
-if struct_score < 0.2 or avg_cycle > 90:  # ← 以前は 0.3 / 80
-    continue
+for candidate in candidates:
+    struct_score = calculate_struct_score(candidate)
+    conf = calculate_confidence(candidate)
+    cycle = calculate_average_cycle(candidate)
+
+    # スコア算出前に条件でスキップ
+    if struct_score < 0.2 or cycle > 90:
+        continue
+
+    score = calculate_candidate_score(struct_score, conf, cycle)
+
+    # 必要なら候補にスコアを保存したり、ソート用に追加したり
+    candidate["score"] = score
+    filtered_candidates.append(candidate)
 
 class LotoPredictor:
     def __init__(self, input_size, hidden_size):
