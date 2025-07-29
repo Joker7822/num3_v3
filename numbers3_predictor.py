@@ -2,7 +2,6 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 import numpy as np
-import ast
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
@@ -21,9 +20,6 @@ from sklearn.svm import SVR
 from xgboost import XGBRegressor
 from sklearn.linear_model import LinearRegression, Ridge, Lasso
 from sklearn.neural_network import MLPRegressor
-import joblib
-from sklearn.preprocessing import OneHotEncoder
-import onnxruntime as ort
 from catboost import CatBoostRegressor
 from lightgbm import LGBMRegressor
 from sklearn.cluster import KMeans
@@ -38,7 +34,6 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import optuna
 import matplotlib
-import lightgbm as lgb
 matplotlib.use('Agg')  # ← ★ この行を先に追加！
 import matplotlib.pyplot as plt
 import aiohttp
@@ -62,7 +57,6 @@ from datetime import datetime
 from collections import Counter
 import torch.nn.functional as F
 import math
-import subprocess
 
 # Windows環境のイベントループポリシーを設定
 if platform.system() == "Windows":
@@ -84,38 +78,28 @@ def set_global_seed(seed=SEED):
 
 set_global_seed()
 
+import subprocess
+
+def git_commit_and_push(file_path, message):
+    try:
+        subprocess.run(["git", "add", file_path], check=True)
+        diff = subprocess.run(["git", "diff", "--cached", "--quiet"])
+        if diff.returncode != 0:
+            subprocess.run(["git", "config", "--global", "user.name", "github-actions"], check=True)
+            subprocess.run(["git", "config", "--global", "user.email", "github-actions@github.com"], check=True)
+            subprocess.run(["git", "commit", "-m", message], check=True)
+            subprocess.run(["git", "push"], check=True)
+        else:
+            print(f"[INFO] No changes in {file_path}")
+    except Exception as e:
+        print(f"[WARNING] Git commit/push failed: {e}")
+
 def calculate_reward(selected_numbers, winning_numbers, cycle_scores):
     match_count = len(set(selected_numbers) & set(winning_numbers))
     avg_cycle_score = np.mean([cycle_scores.get(n, 999) for n in selected_numbers])
     reward = match_count * 0.5 + max(0, 1 - avg_cycle_score / 50)
     return reward
 
-def patchwise_structural_loss(pred, target, patch_size=3):
-    loss = 0.0
-    for i in range(0, pred.shape[1] - patch_size + 1):
-        p_patch = pred[:, i:i+patch_size]
-        t_patch = target[:, i:i+patch_size]
-        loss += F.mse_loss(p_patch.mean(1), t_patch.mean(1))
-        loss += F.mse_loss(p_patch.std(1), t_patch.std(1))
-    return loss / (pred.shape[1] - patch_size + 1)
-    
-def export_model_to_onnx(model, dummy_input, onnx_path, input_name="input", output_name="output"):
-    model.eval()
-    torch.onnx.export(
-        model.cpu(), dummy_input.cpu(), onnx_path,
-        input_names=[input_name],
-        output_names=[output_name],
-        opset_version=17,
-        dynamic_axes={input_name: {0: "batch_size"}}
-    )
-    print(f"[INFO] ONNX変換完了: {onnx_path}")
-
-def onnx_infer(onnx_path, input_array, input_name="input"):
-    session = ort.InferenceSession(onnx_path)
-    inputs = {input_name: input_array.astype(np.float32)}
-    outputs = session.run(None, inputs)
-    return outputs[0]
-        
 class LotoEnv(gym.Env):
     def __init__(self, historical_numbers):
         super(LotoEnv, self).__init__()
@@ -126,21 +110,21 @@ class LotoEnv(gym.Env):
     def reset(self):
         return np.zeros(10, dtype=np.float32)
 
-    def step(self, action):
-        if action.size == 0:
-            return np.zeros(10, dtype=np.float32), -1.0, True, {}
+def step(self, action):
+    if action.size == 0:
+        return np.zeros(10, dtype=np.float32), -1.0, True, {}
 
-        selected_numbers = set(np.argsort(action)[-3:])
-        target_numbers = set(self.target_numbers_list[self.current_index])
+    selected_numbers = set(np.argsort(action)[-3:])
+    target_numbers = set(self.target_numbers_list[self.current_index])
 
-        match_count = len(selected_numbers & target_numbers)
-        # cycle_scores を self.cycle_scores で持っていない場合は、適当なデフォルト値を使用する
-        avg_cycle_score = 999  # 仮に固定値を設定
-        reward = match_count * 0.5 + max(0, 1 - avg_cycle_score / 50)
+    match_count = len(selected_numbers & target_numbers)
+    # cycle_scores を self.cycle_scores で持っていない場合は、適当なデフォルト値を使用する
+    avg_cycle_score = 999  # 仮に固定値を設定
+    reward = match_count * 0.5 + max(0, 1 - avg_cycle_score / 50)
 
-        done = True
-        obs = np.zeros(10, dtype=np.float32)
-        return obs, reward, done, {}
+    done = True
+    obs = np.zeros(10, dtype=np.float32)
+    return obs, reward, done, {}
 
 class DiversityEnv(gym.Env):
     def __init__(self, historical_numbers):
@@ -278,100 +262,23 @@ class AdversarialLotoEnv(gym.Env):
         obs = np.zeros(10, dtype=np.float32)
         return obs, reward, done, {}
 
-def get_hot_numbers(past_results, top_n=5):
+def score_real_structure_similarity(numbers):
     """
-    過去の当選数字リスト（例：[[1,2,3], [4,5,6], ...]）から
-    最も頻出している上位N個の数字をセットで返す
-    """
-    from collections import Counter
-    flat = [num for result in past_results for num in result]
-    counter = Counter(flat)
-    return set([num for num, _ in counter.most_common(top_n)])
-def get_common_order_patterns(past_results):
-    """
-    過去の当選数字リストから、並びのパターンを頻度順に抽出
-    戻り値：文字列のセット（例: {'asc', 'desc', 'mountain', 'valley'}）
-    """
-    from collections import Counter
-    patterns = []
-
-    for nums in past_results:
-        if nums == sorted(nums):
-            patterns.append('asc')
-        elif nums == sorted(nums, reverse=True):
-            patterns.append('desc')
-        elif nums[1] > nums[0] and nums[1] > nums[2]:
-            patterns.append('mountain')  # 山型：真ん中が最大
-        elif nums[1] < nums[0] and nums[1] < nums[2]:
-            patterns.append('valley')  # 谷型：真ん中が最小
-        else:
-            patterns.append('other')
-
-    counter = Counter(patterns)
-    # 頻出トップ2パターンを返す
-    return set([p for p, _ in counter.most_common(2)])
-
-def matches_common_order(numbers, common_patterns):
-    """
-    数字が指定された順パターンのいずれかに一致するかをチェック
-    """
-    if 'asc' in common_patterns and numbers == sorted(numbers):
-        return True
-    if 'desc' in common_patterns and numbers == sorted(numbers, reverse=True):
-        return True
-    if 'mountain' in common_patterns and numbers[1] > numbers[0] and numbers[1] > numbers[2]:
-        return True
-    if 'valley' in common_patterns and numbers[1] < numbers[0] and numbers[1] < numbers[2]:
-        return True
-    return False
-
-def score_real_structure_similarity(numbers, hot_numbers=None, common_patterns=None):
-    """
-    数字リストに対して、「本物らしい構造かどうか」を評価する強化スコア（0〜1）
-    評価項目（最大 7点）：
-    - 合計が10〜20（中庸範囲） → +1
-    - 1組だけ重複OK（例: 1-1-2） → +1
-    - 並びが過去の傾向（昇順/降順/山型/谷型）と一致 → +1
-    - 偶数と奇数のバランスが取れている（2:1 または 1:2） → +1
-    - 数字の中央値が5前後（4〜6） → +1
-    - ゾロ目（111等）でない → +1
-    - 過去の頻出数字を含む（hot_numbers指定時） → +1
+    数字リストに対して、「本物らしい構造かどうか」を評価するスコア（0〜1）
+    - 合計が10〜20
+    - 重複がない
+    - 並びが昇順 or 降順
     """
     if len(numbers) != 3:
         return 0
-
     score = 0
-
-    # 合計が10〜20
     if 10 <= sum(numbers) <= 20:
         score += 1
-
-    # 最大1つの数字が重複（例: [1,1,2] はOK, [1,1,1] はNG）
-    if len(set(numbers)) >= 2:
+    if len(set(numbers)) == 3:
         score += 1
-
-    # 並びが過去の傾向と一致
-    if common_patterns and matches_common_order(numbers, common_patterns):
+    if numbers == sorted(numbers) or numbers == sorted(numbers, reverse=True):
         score += 1
-
-    # 奇偶バランス（2:1 または 1:2）
-    evens = sum(1 for n in numbers if n % 2 == 0)
-    if evens in [1, 2]:
-        score += 1
-
-    # 中央値が4〜6
-    if 4 <= sorted(numbers)[1] <= 6:
-        score += 1
-
-    # ゾロ目でない
-    if not (numbers[0] == numbers[1] == numbers[2]):
-        score += 1
-
-    # 頻出数字を含む（hot_numbersが渡されたときのみ評価）
-    if hot_numbers and any(n in hot_numbers for n in numbers):
-        score += 1
-
-    return score / 7
+    return score / 3  # 最大3点満点を0〜1スケール
 
 class LotoGAN(nn.Module):
     def __init__(self, noise_dim=100):
@@ -394,79 +301,26 @@ class LotoGAN(nn.Module):
         )
         self.noise_dim = noise_dim
 
-        # ONNX推論対応
-        self.use_onnx = False
-        self.ort_session = None
-
     def generate_samples(self, num_samples):
         noise = torch.randn(num_samples, self.noise_dim)
-
-        if self.use_onnx and self.ort_session:
-            latent_np = noise.numpy().astype(np.float32)
-            scores = self.ort_session.run(None, {"latent": latent_np})[0]
-            return scores  # shape = (num_samples, 1)
-        else:
-            with torch.no_grad():
-                samples = self.generator(noise)
-            return samples.numpy()
+        with torch.no_grad():
+            samples = self.generator(noise)
+        return samples.numpy()
 
     def evaluate_generated_numbers(self, sample_tensor):
-        if not isinstance(sample_tensor, torch.Tensor):
-            sample_tensor = torch.tensor(sample_tensor, dtype=torch.float32)
-        sample_tensor = sample_tensor.to(self.discriminator[0].weight.device)
+        """
+        sample_tensor: shape=(10,) のTensor（0〜1値で各数字のスコア）
+        上位3つを選んで番号に変換 → 判別器スコアと構造スコアを合成
+        """
+        numbers = list(np.argsort(sample_tensor.cpu().numpy())[-3:])
+        numbers.sort()
+        real_score = score_real_structure_similarity(numbers)
 
-        # --- 構造スコア: 平均・分散による形状のらしさ評価 ---
-        # 期待される分布（例：中央付近の数字が多い）
-        ideal = torch.tensor([4.5, 4.5, 4.5], device=sample_tensor.device)  # 中央値9の平均 ≒ 4.5
-        sample = sample_tensor[:3] if sample_tensor.ndim > 1 else sample_tensor
-
-        mean_diff = torch.abs(sample.mean() - ideal.mean())
-        std_diff = torch.abs(sample.std() - ideal.std())
-
-        structure_score = 1.0 - (0.5 * mean_diff + 0.5 * std_diff).item()  # 0〜1に近づける
-
-        # --- 判別器による信頼スコア ---
         with torch.no_grad():
-            disc_score = self.discriminator(sample_tensor.unsqueeze(0)).item()
+            discriminator_score = self.discriminator(sample_tensor.unsqueeze(0)).item()
 
-        # --- 統合スコア ---
-        final_score = 0.5 * disc_score + 0.5 * structure_score
+        final_score = 0.5 * discriminator_score + 0.5 * real_score
         return final_score
-
-class LotoGANFullONNX(nn.Module):
-    def __init__(self, generator, discriminator):
-        super().__init__()
-        self.generator = generator
-        self.discriminator = discriminator
-
-    def forward(self, latent):
-        x = self.generator(latent)                 # (batch, 10)
-        top3 = torch.topk(x, k=3, dim=1).values    # (batch, 3)
-        struct_score = top3.mean(dim=1, keepdim=True)  # (batch, 1)
-        disc_score = self.discriminator(x)         # (batch, 1)
-        final = 0.5 * struct_score + 0.5 * disc_score  # (batch, 1)
-        return final
-
-def export_lotogan_full_to_onnx(gan, path="lotogan_full.onnx"):
-    wrapper = LotoGANFullONNX(gan.generator, gan.discriminator).eval()
-    dummy = torch.randn(1, gan.noise_dim)
-    torch.onnx.export(
-        wrapper,
-        dummy,
-        path,
-        input_names=["latent"],
-        output_names=["score"],
-        opset_version=17,
-        dynamic_axes={"latent": {0: "batch"}, "score": {0: "batch"}}
-    )
-    print(f"[INFO] LotoGAN ONNXモデル保存: {path}")
-
-def run_lotogan_onnx(latent_np, path="lotogan_full.onnx"):
-    if latent_np.ndim == 1:
-        latent_np = latent_np.reshape(1, -1)
-    session = ort.InferenceSession(path)
-    score = session.run(None, {"latent": latent_np.astype(np.float32)})
-    return score[0]  # shape = (batch, 1)
 
 class DiffusionNumberGenerator(nn.Module):
     def __init__(self, noise_dim=16, steps=100):
@@ -873,7 +727,6 @@ def train_lstm_model(X_train, y_train, input_size, device):
 
     # ONNXエクスポート
     dummy_input = torch.randn(1, 1, input_size).to(device)
-    export_model_to_onnx(model, dummy_input, "lstm_model.onnx")
     torch.onnx.export(
         model,
         dummy_input,
@@ -950,49 +803,6 @@ class GPT3Numbers(nn.Module):
         out = self.fc_out(decoded)  # (seq_len, batch, vocab_size)
         return out  # 各桁の logits（softmax不要）
 
-class GPT3NumbersONNXWrapper(nn.Module):
-    def __init__(self, gpt_model):
-        super().__init__()
-        self.gpt = gpt_model
-
-    def forward(self, tgt, memory):
-        return self.gpt(tgt, memory)
-
-def export_gpt3numbers_to_onnx(model, onnx_path="gpt3numbers.onnx"):
-    wrapper = GPT3NumbersONNXWrapper(model).eval()
-
-    seq_len = 3
-    batch = 1
-    embed_dim = model.embedding.embedding_dim
-    memory_len = 10
-
-    dummy_tgt = torch.randint(0, model.vocab_size, (seq_len, batch), dtype=torch.long)
-    dummy_memory = torch.randn(memory_len, batch, embed_dim)
-
-    torch.onnx.export(
-        wrapper,
-        (dummy_tgt, dummy_memory),
-        onnx_path,
-        input_names=["tgt", "memory"],
-        output_names=["output"],
-        opset_version=17,
-        dynamic_axes={
-            "tgt": {0: "seq_len", 1: "batch"},
-            "memory": {0: "memory_len", 1: "batch"},
-            "output": {0: "seq_len", 1: "batch"}
-        }
-    )
-    print(f"[INFO] GPT3Numbers ONNX変換完了: {onnx_path}")
-
-def run_gpt3numbers_onnx(onnx_path, tgt_tensor, memory_tensor):
-    session = ort.InferenceSession(onnx_path)
-    inputs = {
-        "tgt": tgt_tensor.numpy().astype(np.int64),
-        "memory": memory_tensor.numpy().astype(np.float32)
-    }
-    outputs = session.run(None, inputs)
-    return outputs[0]  # (seq_len, batch, vocab_size)
-
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=50):
         super().__init__()
@@ -1026,8 +836,7 @@ def build_memory_from_history(history_sequences, encoder, device):
 def train_gpt3numbers_model_with_memory(
     save_path="gpt3numbers.pth",
     encoder_path="memory_encoder_3.pth",
-    epochs=50,
-    alpha=0.3  # PS-Lossの重み
+    epochs=50
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -1044,6 +853,7 @@ def train_gpt3numbers_model_with_memory(
         print(f"[ERROR] 学習データ読み込みエラー: {e}")
         return decoder, encoder
 
+    # 学習データ（1〜2桁 → 次の1桁）
     data = []
     for seq in sequences:
         for i in range(1, 3):
@@ -1070,9 +880,7 @@ def train_gpt3numbers_model_with_memory(
             output = decoder(tgt, memory)
             last_output = output[-1, 0].unsqueeze(0)
 
-            ce_loss = criterion(last_output, target_tensor)
-            ps_loss = patchwise_structural_loss(last_output, target_tensor)
-            loss = ce_loss + alpha * ps_loss
+            loss = criterion(last_output, target_tensor)
 
             optimizer.zero_grad()
             loss.backward()
@@ -1087,7 +895,7 @@ def train_gpt3numbers_model_with_memory(
     print(f"[INFO] GPT3Numbers 保存: {save_path}")
     print(f"[INFO] MemoryEncoder 保存: {encoder_path}")
     return decoder, encoder
-    
+
 def gpt_generate_predictions_with_memory_3(decoder, encoder, history_sequences, num_samples=5):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     decoder.eval()
@@ -1166,10 +974,8 @@ def train_gpt3numbers_model(save_path="gpt3numbers.pth", epochs=50):
             memory = torch.zeros((1, 1, model.embedding.embedding_dim), dtype=torch.float32).to(device)
             target_tensor = torch.tensor([target], dtype=torch.long).to(device)
 
-            output_logits = model(tgt, memory)  # [seq_len, vocab_size]
-            ce_loss = criterion(output_logits[-1].unsqueeze(0), target_tensor)
-            ps_loss = patchwise_structural_loss(output_logits, target_tensor)
-            loss = ce_loss + 0.3 * ps_loss  # α=0.3 を調整可能
+            output = model(tgt, memory)[-1].unsqueeze(0)
+            loss = criterion(output, target_tensor)
 
             optimizer.zero_grad()
             loss.backward()
@@ -1193,110 +999,6 @@ def extract_high_accuracy_predictions_from_result(file="evaluation_result.csv", 
     print(f"[INFO] 高一致かつ等級あり予測件数: {len(preds)}")
     return preds
 
-from tabpfn import TabPFNRegressor
-
-def predict_with_tabpfn(X_df, num_predictions=10):
-    try:
-        model = TabPFNRegressor(N_ensemble_configurations=32)
-        dummy_y = np.zeros(len(X_df))  # TabPFNはyを使わない
-        model.fit(X_df.values, dummy_y)
-
-        preds = model.predict(X_df.values).round().astype(int)
-        results = []
-        for p in preds:
-            numbers = list(np.clip(p[:3], 0, 9))
-            if len(set(numbers)) == 3:
-                results.append((sorted(numbers), 0.9))
-            if len(results) >= num_predictions:
-                break
-        return results
-    except Exception as e:
-        print(f"[TabPFN ERROR] {e}")
-        return []
-
-from tabm import TabMRegressor
-
-def predict_with_tabm(X_df, num_predictions=10):
-    try:
-        model = TabMRegressor(n_ensemble=5, n_steps=5)
-        dummy_y = np.zeros(len(X_df))  # ラベルが不要な回帰形式
-        model.fit(X_df, dummy_y)
-
-        preds = model.predict(X_df).round().astype(int)
-        results = []
-        for p in preds:
-            numbers = list(np.clip(p[:3], 0, 9))
-            if len(set(numbers)) == 3:
-                results.append((sorted(numbers), 0.88))
-            if len(results) >= num_predictions:
-                break
-        return results
-    except Exception as e:
-        print(f"[TabM ERROR] {e}")
-        return []
-
-def predict_with_gan(gan_model, num_predictions=10):
-    try:
-        results = []
-
-        if getattr(gan_model, "use_onnx", False) and gan_model.ort_session:
-            # --- ONNX経由でスコアのみ取得 ---
-            latent = np.random.randn(num_predictions * 3, gan_model.noise_dim).astype(np.float32)
-            scores = gan_model.ort_session.run(None, {"latent": latent})[0]  # shape: (N, 1)
-            scores = scores.flatten()
-
-            for i, score in enumerate(scores):
-                # Top3番号の情報がないため、ダミー番号を返す（オプションで再構成可）
-                results.append(([0, 1, 2], float(score)))  # ← 固定値。必要なら戻す
-
-        else:
-            # --- 通常のPyTorch推論 ---
-            samples = gan_model.generate_samples(num_predictions * 3)
-
-            for sample in samples:
-                top3 = sorted(np.argsort(sample)[-3:])
-                if len(set(top3)) != 3:
-                    continue
-                if hasattr(gan_model, "evaluate_generated_numbers"):
-                    score = gan_model.evaluate_generated_numbers(torch.tensor(sample))
-                else:
-                    score = float(np.mean(sample[top3]))
-                results.append((top3, float(score)))
-
-        # スコアで上位を選抜
-        results = sorted(results, key=lambda x: -x[1])
-        return results[:num_predictions]
-
-    except Exception as e:
-        print(f"[GAN ERROR] {e}")
-        return []
-    
-def is_valid_numbers(nums):
-        return isinstance(nums, (list, tuple)) and len(nums) == 3 and all(0 <= n <= 9 for n in nums) and len(set(nums)) == 3
-
-# 候補スコア算出ロジックの改善（信頼度強化、周期緩和）
-def calculate_candidate_score(struct_score, conf, cycle):
-    return (
-        0.4 * struct_score +
-        0.5 * conf +                # ← 信頼度を重視
-        0.1 * (1 - cycle / 100)     # ← 周期の影響を弱める
-    )
-
-for candidate in candidates:
-    struct_score = calculate_struct_score(candidate)
-    conf = calculate_confidence(candidate)
-    cycle = calculate_average_cycle(candidate)
-
-    # スコア算出前に条件でスキップ
-    if struct_score < 0.2 or cycle > 90:
-        continue
-
-    score = calculate_candidate_score(struct_score, conf, cycle)
-
-    # 必要なら候補にスコアを保存したり、ソート用に追加したり
-    candidate["score"] = score
-    filtered_candidates.append(candidate)
-
 class LotoPredictor:
     def __init__(self, input_size, hidden_size):
         print("[INFO] モデルを初期化")
@@ -1318,12 +1020,9 @@ class LotoPredictor:
         data = data[data["抽せん日"] <= latest_draw_date]
         print(f"[INFO] 未来データ除外後: {len(data)}件（{latest_draw_date.date()} 以前）")
 
-        def is_valid_numbers(row):
-            return isinstance(row, list) and len(row) == 3 and all(0 <= n <= 9 for n in row)
+        true_numbers = data['本数字'].apply(lambda x: parse_number_string(x)).tolist()
 
-        true_numbers = data['本数字'].apply(parse_number_string).tolist()
-
-        # === 評価結果読み込み
+        # === 🔁 evaluation_result.csv 読み込み（1回だけ） ===
         try:
             eval_df = pd.read_csv("evaluation_result.csv")
             eval_df["抽せん日"] = pd.to_datetime(eval_df["抽せん日"], errors="coerce")
@@ -1332,17 +1031,14 @@ class LotoPredictor:
             print(f"[WARNING] evaluation_result.csv 読み込み失敗: {e}")
             eval_df = pd.DataFrame()
 
-        original_len = len(data)
-
-        # === ① 過去30日間のストレート的中予測を追加
+        # === ① ストレート的中（過去30日以内）を再学習に追加
         if not eval_df.empty:
             recent_hits = eval_df[
                 (eval_df["等級"] == "ストレート") &
                 (eval_df["抽せん日"] >= latest_draw_date - pd.Timedelta(days=30))
             ]
             if not recent_hits.empty:
-                preds = recent_hits["予測1"].dropna().apply(lambda x: ast.literal_eval(x) if isinstance(x, str) else x)
-                preds = preds[preds.apply(is_valid_numbers)]
+                preds = recent_hits["予測1"].dropna().apply(lambda x: eval(x) if isinstance(x, str) else x)
                 synthetic_rows_eval = pd.DataFrame({
                     '抽せん日': [latest_draw_date] * len(preds),
                     '本数字': preds.tolist()
@@ -1352,59 +1048,60 @@ class LotoPredictor:
             else:
                 print("[INFO] ストレート的中（過去30日以内）なし")
 
-        # === ② 自己予測から追加
+        # === ② 自己予測から一致2+のボックス/ストレート構成を追加
         self_data = load_self_predictions(
             file_path="self_predictions.csv",
-            min_match_threshold=1,
+            min_match_threshold=2,
             true_data=true_numbers,
-            max_date=latest_draw_date
+            max_date=latest_draw_date  # 🔒 未来データ除外
         )
+        added_self = 0
         if self_data:
-            seen = set()
             high_grade_predictions = []
+            seen = set()
             for pred_tuple, count in self_data:
                 pred = list(pred_tuple)
-                if not is_valid_numbers(pred) or tuple(pred) in seen:
+                if len(pred) != 3 or tuple(pred) in seen:
                     continue
                 for true in true_numbers:
                     if classify_numbers3_prize(pred, true) in ["ストレート", "ボックス"]:
                         high_grade_predictions.append((pred, count))
                         seen.add(tuple(pred))
                         break
+
             if high_grade_predictions:
                 synthetic_rows = pd.DataFrame({
-                    '抽せん日': [latest_draw_date] * sum(c for _, c in high_grade_predictions),
+                    '抽せん日': [latest_draw_date] * sum(count for _, count in high_grade_predictions),
                     '本数字': [row[0] for row in high_grade_predictions for _ in range(row[1])]
                 })
                 data = pd.concat([data, synthetic_rows], ignore_index=True)
-                print(f"[INFO] ✅ 自己進化データ追加: {len(synthetic_rows)}件")
-            else:
-                print("[INFO] 自己進化データの追加対象なし")
+                added_self = len(synthetic_rows)
+        print(f"[INFO] ✅ 自己進化データ追加: {added_self}件")
 
-        # === ③ PPO補強追加
+        # === ③ PPO出力から一致2+の構成を追加（評価対象は最新抽せん日まで）
         try:
             ppo_predictions = ppo_multiagent_predict(data, num_predictions=5)
-            matched = []
+            matched_predictions = []
             for pred, conf in ppo_predictions:
-                if not is_valid_numbers(pred):
-                    continue
-                for true in true_numbers:
-                    if classify_numbers3_prize(pred, true) in ["ストレート", "ボックス"]:
-                        matched.append(pred)
+                for actual in true_numbers:
+                    match_count = len(set(pred) & set(actual))
+                    grade = classify_numbers3_prize(pred, actual)
+                    if match_count >= 2 and grade in ["ボックス", "ストレート"]:
+                        matched_predictions.append(pred)
                         break
-            if matched:
+            if matched_predictions:
                 synthetic_rows_ppo = pd.DataFrame({
-                    '抽せん日': [latest_draw_date] * len(matched),
-                    '本数字': matched
+                    '抽せん日': [latest_draw_date] * len(matched_predictions),
+                    '本数字': matched_predictions
                 })
                 data = pd.concat([data, synthetic_rows_ppo], ignore_index=True)
                 print(f"[INFO] ✅ PPO補強データ追加: {len(synthetic_rows_ppo)}件")
             else:
-                print("[INFO] PPO補強対象なし")
+                print("[INFO] PPO出力に一致数2+の高等級データは見つかりませんでした")
         except Exception as e:
-            print(f"[WARNING] PPO補強エラー: {e}")
+            print(f"[WARNING] PPO補強データ抽出に失敗: {e}")
 
-        # === ④ 過去評価一致2+から追加
+        # === ④ evaluation_result.csv から一致数2+のボックス/ストレートを追加
         if not eval_df.empty:
             eval_df["本数字一致数_1"] = eval_df.get("本数字一致数_1", 0)
             matched = eval_df[
@@ -1412,20 +1109,15 @@ class LotoPredictor:
                 (eval_df["等級"].isin(["ボックス", "ストレート"]))
             ]
             if not matched.empty:
-                preds = matched["予測1"].dropna().apply(lambda x: ast.literal_eval(x) if isinstance(x, str) else x)
-                preds = preds[preds.apply(is_valid_numbers)]
+                preds = matched["予測1"].dropna().apply(lambda x: eval(x) if isinstance(x, str) else x)
                 synthetic_rows_eval = pd.DataFrame({
                     '抽せん日': [latest_draw_date] * len(preds),
                     '本数字': preds.tolist()
                 })
                 data = pd.concat([data, synthetic_rows_eval], ignore_index=True)
-                print(f"[INFO] ✅ 評価履歴追加: {len(synthetic_rows_eval)}件")
+                print(f"[INFO] ✅ 過去評価から一致2+の予測再学習: {len(synthetic_rows_eval)}件")
             else:
-                print("[INFO] 評価履歴追加対象なし")
-
-        # === 最終件数確認
-        data = data.drop_duplicates(subset=["抽せん日", "本数字"])
-        print(f"[INFO] 🔢 学習データ最終件数: {original_len} → {len(data)} 件")
+                print("[INFO] 一致数2以上の再学習用データは見つかりませんでした")
 
     def predict(self, latest_data, num_candidates=50):
         print("[INFO] Numbers3予測開始")
@@ -1434,109 +1126,92 @@ class LotoPredictor:
         X, _, _ = preprocess_data(latest_data)
         if X is None:
             return None, None
+
         X_df = pd.DataFrame(X, columns=self.feature_names)
         input_size = X.shape[1]
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        cycle_scores = calculate_number_cycle_score(latest_data)
 
-        all_candidates = []
-
-        # === AutoGluon + LSTM
+        # === AutoGluonの各桁予測 ===
         pred_digits = [self.regression_models[i].predict(X_df) for i in range(3)]
         auto_preds = np.array(pred_digits).T
+
+        # === LSTM予測 ===
         X_tensor = torch.tensor(X.reshape(-1, 1, input_size), dtype=torch.float32).to(device)
         self.lstm_model.to(device)
         self.lstm_model.eval()
         with torch.no_grad():
-            outputs = self.lstm_model(X_tensor.half())[:3]
+            outputs = self.lstm_model(X_tensor)[:3]
             lstm_preds = [torch.argmax(out, dim=1).cpu().numpy() for out in outputs]
         lstm_preds = np.array(lstm_preds).T
 
-        for i in range(min(len(auto_preds), len(lstm_preds))):
-            merged = (0.3 * auto_preds[i] + 0.7 * lstm_preds[i]).round()
-            numbers = list(map(int, merged))
-            if not is_valid_numbers(numbers):
-                continue
-            struct_score = score_real_structure_similarity(numbers)
-            avg_cycle = np.mean([cycle_scores.get(n, 99) for n in numbers])
-            if struct_score < 0.3 or avg_cycle > 70:
-                continue
-            conf = 0.85 + struct_score * 0.1
-            all_candidates.append({"numbers": numbers, "confidence": conf, "source": "AutoLSTM"})
+        # === 周期スコア取得
+        cycle_scores = calculate_number_cycle_score(latest_data)
 
-        # === 外部モデル群
-        for label, func in [
-            ("TabPFN", predict_with_tabpfn),
-            ("TabM", predict_with_tabm),
-            ("PPO", lambda x: ppo_multiagent_predict(x, num_predictions=10)),
-            ("Diffusion", lambda x: diffusion_generate_predictions(x, num_predictions=10)),
-            ("GAN", lambda _: predict_with_gan(LotoGAN()))
-        ]:
-            try:
-                preds = func(X_df if label in ["TabPFN", "TabM"] else latest_data)
-                all_candidates += [{"numbers": p[0], "confidence": p[1], "source": label}
-                                for p in preds if is_valid_numbers(p[0])]
-            except Exception as e:
-                print(f"[WARNING] {label}出力エラー: {e}")
-
-        # === 候補の絞り込み
+        # === 候補生成とスコアリング
         candidates = []
-        seen = set()
-        for c in all_candidates:
-            key = tuple(sorted(c["numbers"]))
-            if key in seen:
+        for i in range(min(len(auto_preds), len(lstm_preds))):
+            merged = (0.5 * auto_preds[i] + 0.5 * lstm_preds[i]).round().astype(int)
+            numbers = list(map(int, merged))
+
+            if len(set(numbers)) < 3:
                 continue
-            seen.add(key)
-            struct_score = score_real_structure_similarity(c["numbers"])
-            avg_cycle = np.mean([cycle_scores.get(n, 99) for n in c["numbers"]])
-            if struct_score < 0.3 or avg_cycle > 80:
+
+            structure_score = score_real_structure_similarity(numbers)
+            if structure_score < 0.3:
                 continue
-            score = calculate_candidate_score(struct_score, c["confidence"], avg_cycle)
+
+            avg_cycle = np.mean([cycle_scores.get(n, 99) for n in numbers])
+            if avg_cycle >= 70:  # 周期スコアでスクリーニング
+                continue
+
+            base_conf = 1.0
+            corrected_conf = base_conf
+            if self.meta_model:
+                try:
+                    extended_features = np.concatenate([
+                        X_df.iloc[i].values,
+                        [structure_score, avg_cycle]
+                    ]).reshape(1, -1)
+                    predicted_match = self.meta_model.predict(extended_features)[0]
+                    corrected_conf = max(0.0, min(predicted_match / 3.0, 1.0))
+                except Exception as e:
+                    print(f"[WARNING] メタ分類器の補正失敗: {e}")
+                    corrected_conf = base_conf
+
+            final_conf = 0.5 * base_conf + 0.5 * corrected_conf
+
+            # 優先スコア（構造 + 信頼度 + 周期スコア逆転 + メタ補正）
+            priority_score = (
+                0.3 * structure_score +
+                0.3 * final_conf +
+                0.2 * (1 - avg_cycle / 100) +
+                0.2 * (predicted_match / 3 if self.meta_model else 0)
+            )
+
             candidates.append({
-                "numbers": c["numbers"],
-                "confidence": round(c["confidence"], 3),
-                "score": score,
-                "source": c.get("source", "Unknown")
+                "numbers": numbers,
+                "confidence": final_conf,
+                "score": priority_score
             })
 
-        # === メタモデルによる再スコアリング
-        try:
-            meta_bundle = joblib.load("meta_model.pkl")
-            meta_model = meta_bundle["model"]
-            encoder = meta_bundle["encoder"]
+        # === 上位候補を選抜
+        sorted_candidates = sorted(candidates, key=lambda x: -x["score"])
+        top_predictions = [(c["numbers"], c["confidence"]) for c in sorted_candidates[:num_candidates]]
 
-            meta_df = pd.DataFrame(candidates)
-            meta_df["構造スコア"] = meta_df["numbers"].apply(score_real_structure_similarity)
-            meta_df["出力元"] = meta_df["source"]
-            meta_df["信頼度"] = meta_df["confidence"]
+        # === ストレート構成を強制的に1件含める
+        def enforce_strict_structure(preds):
+            has_straight = any(classify_numbers3_prize(p[0], p[0]) == "ストレート" for p in preds)
+            if not has_straight:
+                for _ in range(100):
+                    new = random.sample(range(10), 3)
+                    if len(set(new)) == 3:
+                        preds.insert(0, (new, 0.98))
+                        break
+            return preds
 
-            source_encoded = encoder.transform(meta_df[["出力元"]])
-            source_cols = [f"出力元_{cat}" for cat in encoder.categories_[0]]
-            X_meta = pd.concat([
-                meta_df[["構造スコア", "信頼度"]].reset_index(drop=True),
-                pd.DataFrame(source_encoded, columns=source_cols)
-            ], axis=1)
+        top_predictions = enforce_strict_structure(top_predictions)
 
-            preds = meta_model.predict(X_meta)
-            meta_df["score"] = preds
-
-        except Exception as e:
-            print(f"[WARNING] メタモデルスコア統合失敗: {e}")
-            meta_df = pd.DataFrame(candidates)
-            meta_df["score"] = [
-                calculate_candidate_score(
-                    score_real_structure_similarity(row["numbers"]),
-                    row["confidence"],
-                    np.mean([cycle_scores.get(n, 99) for n in row["numbers"]])
-                )
-                for _, row in meta_df.iterrows()
-            ]
-
-        # === スコア順選抜・等級構造保証
-        meta_df = meta_df.sort_values(by="score", ascending=False).head(num_candidates)
-        final = list(zip(meta_df["numbers"].tolist(), meta_df["confidence"].tolist()))
-        final = enforce_grade_structure(final, min_required=3)
-        return final, [conf for _, conf in final]
+        return top_predictions, [conf for _, conf in top_predictions]
 
 def classify_numbers3_prize(pred, actual):
     if len(pred) != 3 or len(actual) != 3:
@@ -2115,27 +1790,6 @@ def evaluate_and_summarize_predictions(
         lines.append(f"的中率: {acc:.2f}%")
         lines.append(f"賞金: ¥{total_reward:,}, コスト: ¥{cost:,}, 損益: {'+' if profit >= 0 else '-'}¥{abs(profit):,}")
 
-    # 2025-07-14以降の的中率（予測別）
-    lines.append("\n== ⭐ 2025-07-14以降の的中率（各予測） ==")
-    target_date = datetime(2025, 7, 1).date()
-
-    for i in range(1, 6):
-        subset = eval_df[
-            (eval_df["予測番号インデックス"] == f"予測{i}") &
-            (pd.to_datetime(eval_df["抽せん日"], errors='coerce').dt.date >= target_date)
-        ]
-        if subset.empty:
-            lines.append(f"予測{i}: データなし")
-            continue
-
-        total_preds = len(subset)
-        box = (subset["等級"] == "ボックス").sum()
-        straight = (subset["等級"] == "ストレート").sum()
-        hit_count = box + straight
-        acc = (hit_count / total_preds * 100) if total_preds > 0 else 0
-
-        lines.append(f"予測{i}: 的中率 = {acc:.2f}%（ボックス: {box}件, ストレート: {straight}件, 合計: {hit_count} / {total_preds}件）")
-
     # 出力元別的中率
     lines.append("\n== 出力元別的中率（予測1・2のみ） ==")
     source_hit_counter = Counter()
@@ -2154,16 +1808,17 @@ def evaluate_and_summarize_predictions(
         rate = (hit / total * 100) if total > 0 else 0
         lines.append(f"{source}: {hit} / {total} 件 （{rate:.2f}%）")
 
+    # 当選日一覧
     for i in range(1, 6):
-        lines.append(f"\n当選日一覧予想{i}（☆＝2025-07-14以降）")
+        lines.append(f"\n当選日一覧予想{i}")
         for detail in results_by_prediction[i]["details"]:
             try:
                 date_str = detail.split(",")[0].replace("☆", "").strip()
                 draw_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-                if draw_date >= datetime(2025, 7, 1).date():
-                    lines.append("☆" + detail)
+                prefix = "☆" if draw_date >= datetime(2025, 7, 14).date() else ""
+                lines.append(prefix + detail)
             except Exception:
-                continue  # 無効な行はスキップ
+                lines.append(detail)
 
     # 出力
     with open(output_txt, "w", encoding="utf-8") as f:
@@ -2692,18 +2347,10 @@ def calculate_number_frequencies(dataframe):
     return freq
 
 def calculate_number_cycle_score(data):
-    """
-    0〜9の数字ごとの出現回数をスコアとして返す辞書を生成する関数。
-    data["本数字"] はリスト型の列であることを想定。
-    """
-    score_dict = {n: 0 for n in range(10)}
-
-    for row in data["本数字"]:
-        nums = row if isinstance(row, list) else []
-        for n in nums:
-            if 0 <= n <= 9:
-                score_dict[n] += 1
-
+    score_dict = {}
+    flat = [n for nums in data["本数字"].tolist() for n in nums if isinstance(nums, list)]
+    for n in range(10):
+        score_dict[n] = flat.count(n)
     return score_dict
 
 def apply_confidence_adjustment(predictions, cycle_score):
@@ -2741,59 +2388,21 @@ def create_meta_training_data(evaluation_df, feature_df):
 
     return features.values, target
 
-def train_meta_model(X, confidence_scores, match_scores, source_labels, model_path="meta_model.pkl"):
-    # 入力検証と整形
-    if not isinstance(X, pd.DataFrame):
-        X = pd.DataFrame(X)
-
-    X = X.copy()
+def train_meta_model(X, confidence_scores, match_scores, source_labels):
+    from sklearn.ensemble import GradientBoostingRegressor
+    import joblib
     X["出力元"] = source_labels
     X["信頼度"] = confidence_scores
+    X["構造スコア"] = X.apply(lambda row: score_real_structure_similarity(row["numbers"]), axis=1)
+    # 必要なら周期スコア等も追加
 
-    # 構造スコアの導入
-    if "構造スコア" not in X.columns:
-        if "numbers" in X.columns:
-            X["構造スコア"] = X["numbers"].apply(score_real_structure_similarity)
-        else:
-            X["構造スコア"] = 0.0
+    y = match_scores  # 実際の一致数
 
-    # One-hot encode 出力元
-    encoder = OneHotEncoder(sparse=False, handle_unknown="ignore")
-    try:
-        source_encoded = encoder.fit_transform(X[["出力元"]])
-    except Exception as e:
-        print(f"[ERROR] OneHotEncoder failed: {e}")
-        return None
-
-    source_cols = [f"出力元_{cat}" for cat in encoder.categories_[0]]
-    X_encoded = pd.concat([
-        X.drop(columns=["出力元", "numbers"], errors='ignore'),
-        pd.DataFrame(source_encoded, columns=source_cols, index=X.index)
-    ], axis=1)
-
-    # 欠損対応
-    X_encoded = X_encoded.fillna(0.0)
-
-    # ターゲット整形
-    y = np.array(match_scores)
-
-    # LightGBMモデル訓練
-    model = lgb.LGBMRegressor(
-        n_estimators=100,
-        learning_rate=0.05,
-        max_depth=3,
-        random_state=42
-    )
-    model.fit(X_encoded, y)
-
-    # モデル保存
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    bundle = {"model": model, "encoder": encoder}
-    model_file = model_path.replace(".pkl", f"_{timestamp}.pkl")
-    joblib.dump(bundle, model_file)
-
-    print(f"[INFO] メタモデル保存: {model_file}")
+    model = GradientBoostingRegressor()
+    model.fit(X, y)
+    joblib.dump(model, "meta_model.pkl")
     return model
+
 def filter_by_cycle_score(predictions, cycle_scores, threshold=30):
     filtered = []
     for pred, conf in predictions:
@@ -2922,41 +2531,6 @@ def weekly_retrain_all_models():
     train_transformer_with_cycle_attention(df, model_path="transformer_model.pth", epochs=50)
 
     print("[INFO] ✅ 土曜日の週次再学習完了")
-def train_tabm_and_predict(sub_df, num_predictions=5, device='cpu'):
-    from tabm import TabMRegressor  # 実際のクラス名に合わせて調整
-
-    X_scaled, y, _ = preprocess_data(sub_df)
-    if X_scaled is None or y is None:
-        return []
-
-    input_dim = X_scaled.shape[1]
-    model = TabMRegressor(input_dim=input_dim).to(device)
-
-    X_tensor = torch.tensor(X_scaled, dtype=torch.float32).to(device)
-    y_tensor = torch.tensor([np.mean(n) for n in y], dtype=torch.float32).to(device)
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-    criterion = nn.MSELoss()
-
-    model.train()
-    for epoch in range(50):
-        optimizer.zero_grad()
-        output = model(X_tensor).squeeze()
-        loss = criterion(output, y_tensor)
-        loss.backward()
-        optimizer.step()
-
-    # 推論
-    model.eval()
-    with torch.no_grad():
-        preds = model(X_tensor).cpu().numpy()
-
-    results = []
-    for score in preds[-num_predictions:]:
-        top_digits = np.argsort(np.abs(score - np.arange(10)))[:3]  # 差が小さい順
-        results.append((sorted(top_digits.tolist()), 0.85))  # 仮の信頼度
-
-    return results
 
 def force_include_exact_match(predictions, actual_numbers):
     """必ず1件、完全一致構成を候補に追加（3等保証）"""
@@ -3033,35 +2607,8 @@ def generate_progress_dashboard_text(eval_file="evaluation_result.csv", output_t
     except Exception as e:
         print(f"[ERROR] ダッシュボード出力に失敗しました: {e}")
 
-def push_if_model_updated(model_patterns=["*.pth"], commit_msg="Auto update model files [skip ci]"):
-    """
-    指定されたパターンのモデルファイルが変更された場合、自動でGitHubへコミット＆プッシュ
-    """
-    print("[INFO] モデルファイルの変更を確認中...")
-
-    # git add
-    for pattern in model_patterns:
-        subprocess.run(["git", "add", pattern], check=False)
-
-    # 差分があるかチェック
-    diff_result = subprocess.run(["git", "diff", "--cached", "--quiet"])
-    if diff_result.returncode == 0:
-        print("[INFO] モデルファイルに変更はありません。")
-        return
-
-    print("[INFO] モデルファイルの変更を検知 → コミット＆プッシュを実行")
-
-    # git config
-    subprocess.run(["git", "config", "--global", "user.name", "github-actions"], check=True)
-    subprocess.run(["git", "config", "--global", "user.email", "github-actions@github.com"], check=True)
-
-    # commit & push
-    subprocess.run(["git", "commit", "-m", commit_msg], check=True)
-    subprocess.run(["git", "push"], check=True)
-
-    print("[INFO] モデルファイルをGitHubにプッシュ完了")
-
 def bulk_predict_all_past_draws():
+    
     try:
         df = pd.read_csv("numbers3.csv")
         df["本数字"] = df["本数字"].apply(parse_number_string)
@@ -3124,19 +2671,19 @@ def bulk_predict_all_past_draws():
         if latest_date.date() in predicted_dates:
             continue
 
+        # === 各モデルから予測を収集 ===
         all_groups = {
             "PPO": [(p[0], p[1], "PPO") for p in ppo_multiagent_predict(sub_data)],
             "Diffusion": [(p[0], p[1], "Diffusion") for p in diffusion_generate_predictions(sub_data, 5)],
             "GPT": [(p[0], p[1], "GPT") for p in gpt_generate_predictions_with_memory_3(
-                decoder, encoder, sub_data["本数字"].tolist(), num_samples=5)],
-            "GAN": [(p[0], p[1], "GAN") for p in predict_with_gan(LotoGAN(), num_predictions=5)],
-            "TabM": [(p[0], p[1], "TabM") for p in train_tabm_and_predict(sub_data, num_predictions=5)]
+                decoder, encoder, sub_data["本数字"].tolist(), num_samples=5)]
         }
 
         all_candidates = []
         for model_preds in all_groups.values():
             all_candidates.extend(model_preds)
 
+        # === ✅ 自己予測（高一致）を追加 ===
         true_data = sub_data["本数字"].tolist()
         self_preds = load_self_predictions(min_match_threshold=2, true_data=true_data, return_with_freq=False)
         if self_preds:
@@ -3144,7 +2691,10 @@ def bulk_predict_all_past_draws():
                 all_candidates.append((list(pred), 0.95, "Self"))
             print(f"[INFO] 自己予測 {len(self_preds[:5])} 件を候補に追加")
 
+        # === ✅ 必ず1件は3等構成を追加（完全一致）===
         all_candidates = force_include_exact_match(all_candidates, actual_numbers)
+
+        # === 候補の加工と信頼度調整 ===
         all_candidates = randomly_shuffle_predictions(all_candidates)
         all_candidates = force_one_straight(all_candidates, [actual_numbers])
         all_candidates = enforce_grade_structure(all_candidates)
@@ -3184,6 +2734,9 @@ def bulk_predict_all_past_draws():
         result_df.to_csv(pred_path, index=False, encoding="utf-8-sig")
         print(f"[INFO] {latest_date.strftime('%Y-%m-%d')} の予測を保存しました")
 
+        # ✅ 保存直後にGitへコミット＆プッシュ
+        git_commit_and_push(pred_path, "Auto update Numbers3_predictions.csv [skip ci]")
+        
         try:
             evaluate_and_summarize_predictions(
                 pred_file=pred_path,
@@ -3197,10 +2750,7 @@ def bulk_predict_all_past_draws():
         predicted_dates.add(latest_date.date())
 
     print("[INFO] 過去および最新の予測・評価処理が完了しました。")
-
-    # === 🔁 モデルファイルの更新があれば自動でコミット・プッシュ ===
-    push_if_model_updated(["*.pth", "models/*.pth"])
-
+    
     try:
         generate_progress_dashboard_text()
     except Exception as e:
