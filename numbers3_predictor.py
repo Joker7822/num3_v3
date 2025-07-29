@@ -51,6 +51,7 @@ import gym
 import sys
 import os
 import random
+from tabm import TabMRegressor  # 実際のクラス名に置き換え
 from sklearn.metrics import precision_score, recall_score, f1_score
 from neuralforecast.models import TFT
 from neuralforecast import NeuralForecast
