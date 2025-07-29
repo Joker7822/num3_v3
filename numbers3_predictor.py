@@ -277,23 +277,100 @@ class AdversarialLotoEnv(gym.Env):
         obs = np.zeros(10, dtype=np.float32)
         return obs, reward, done, {}
 
-def score_real_structure_similarity(numbers):
+def get_hot_numbers(past_results, top_n=5):
     """
-    数字リストに対して、「本物らしい構造かどうか」を評価するスコア（0〜1）
-    - 合計が10〜20
-    - 重複がない
-    - 並びが昇順 or 降順
+    過去の当選数字リスト（例：[[1,2,3], [4,5,6], ...]）から
+    最も頻出している上位N個の数字をセットで返す
+    """
+    from collections import Counter
+    flat = [num for result in past_results for num in result]
+    counter = Counter(flat)
+    return set([num for num, _ in counter.most_common(top_n)])
+def get_common_order_patterns(past_results):
+    """
+    過去の当選数字リストから、並びのパターンを頻度順に抽出
+    戻り値：文字列のセット（例: {'asc', 'desc', 'mountain', 'valley'}）
+    """
+    from collections import Counter
+    patterns = []
+
+    for nums in past_results:
+        if nums == sorted(nums):
+            patterns.append('asc')
+        elif nums == sorted(nums, reverse=True):
+            patterns.append('desc')
+        elif nums[1] > nums[0] and nums[1] > nums[2]:
+            patterns.append('mountain')  # 山型：真ん中が最大
+        elif nums[1] < nums[0] and nums[1] < nums[2]:
+            patterns.append('valley')  # 谷型：真ん中が最小
+        else:
+            patterns.append('other')
+
+    counter = Counter(patterns)
+    # 頻出トップ2パターンを返す
+    return set([p for p, _ in counter.most_common(2)])
+
+def matches_common_order(numbers, common_patterns):
+    """
+    数字が指定された順パターンのいずれかに一致するかをチェック
+    """
+    if 'asc' in common_patterns and numbers == sorted(numbers):
+        return True
+    if 'desc' in common_patterns and numbers == sorted(numbers, reverse=True):
+        return True
+    if 'mountain' in common_patterns and numbers[1] > numbers[0] and numbers[1] > numbers[2]:
+        return True
+    if 'valley' in common_patterns and numbers[1] < numbers[0] and numbers[1] < numbers[2]:
+        return True
+    return False
+
+def score_real_structure_similarity(numbers, hot_numbers=None, common_patterns=None):
+    """
+    数字リストに対して、「本物らしい構造かどうか」を評価する強化スコア（0〜1）
+    評価項目（最大 7点）：
+    - 合計が10〜20（中庸範囲） → +1
+    - 1組だけ重複OK（例: 1-1-2） → +1
+    - 並びが過去の傾向（昇順/降順/山型/谷型）と一致 → +1
+    - 偶数と奇数のバランスが取れている（2:1 または 1:2） → +1
+    - 数字の中央値が5前後（4〜6） → +1
+    - ゾロ目（111等）でない → +1
+    - 過去の頻出数字を含む（hot_numbers指定時） → +1
     """
     if len(numbers) != 3:
         return 0
+
     score = 0
+
+    # 合計が10〜20
     if 10 <= sum(numbers) <= 20:
         score += 1
-    if len(set(numbers)) == 3:
+
+    # 最大1つの数字が重複（例: [1,1,2] はOK, [1,1,1] はNG）
+    if len(set(numbers)) >= 2:
         score += 1
-    if numbers == sorted(numbers) or numbers == sorted(numbers, reverse=True):
+
+    # 並びが過去の傾向と一致
+    if common_patterns and matches_common_order(numbers, common_patterns):
         score += 1
-    return score / 3  # 最大3点満点を0〜1スケール
+
+    # 奇偶バランス（2:1 または 1:2）
+    evens = sum(1 for n in numbers if n % 2 == 0)
+    if evens in [1, 2]:
+        score += 1
+
+    # 中央値が4〜6
+    if 4 <= sorted(numbers)[1] <= 6:
+        score += 1
+
+    # ゾロ目でない
+    if not (numbers[0] == numbers[1] == numbers[2]):
+        score += 1
+
+    # 頻出数字を含む（hot_numbersが渡されたときのみ評価）
+    if hot_numbers and any(n in hot_numbers for n in numbers):
+        score += 1
+
+    return score / 7
 
 class LotoGAN(nn.Module):
     def __init__(self, noise_dim=100):
@@ -1196,12 +1273,17 @@ def predict_with_gan(gan_model, num_predictions=10):
 def is_valid_numbers(nums):
         return isinstance(nums, (list, tuple)) and len(nums) == 3 and all(0 <= n <= 9 for n in nums) and len(set(nums)) == 3
 
+# 候補スコア算出ロジックの改善（信頼度強化、周期緩和）
 def calculate_candidate_score(struct_score, conf, cycle):
-        return (
-            0.4 * struct_score +
-            0.3 * conf +
-            0.3 * (1 - cycle / 100)
-        )
+    return (
+        0.4 * struct_score +
+        0.5 * conf +                # ← 信頼度を重視
+        0.1 * (1 - cycle / 100)     # ← 周期の影響を弱める
+    )
+
+# 構造スコアと周期チェックの緩和
+if struct_score < 0.2 or avg_cycle > 90:  # ← 以前は 0.3 / 80
+    continue
 
 class LotoPredictor:
     def __init__(self, input_size, hidden_size):
@@ -1261,7 +1343,7 @@ class LotoPredictor:
         # === ② 自己予測から追加
         self_data = load_self_predictions(
             file_path="self_predictions.csv",
-            min_match_threshold=2,
+            min_match_threshold=1,
             true_data=true_numbers,
             max_date=latest_draw_date
         )
@@ -1359,7 +1441,7 @@ class LotoPredictor:
         lstm_preds = np.array(lstm_preds).T
 
         for i in range(min(len(auto_preds), len(lstm_preds))):
-            merged = (0.5 * auto_preds[i] + 0.5 * lstm_preds[i]).round().astype(int)
+            merged = (0.3 * auto_preds[i] + 0.7 * lstm_preds[i]).round()
             numbers = list(map(int, merged))
             if not is_valid_numbers(numbers):
                 continue
