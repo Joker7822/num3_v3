@@ -73,38 +73,6 @@ jobs:
       - name: Run predictor script
         run: xvfb-run -a python numbers3_predictor.py
 
-      - name: Push Numbers3_predictions.csv every hour up to 8 times
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "github-actions@github.com"
-          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
-
-          for i in 1 2 3
-          do
-            echo "[INFO] Hourly Push Attempt $i"
-
-            git fetch origin
-            git stash --include-untracked
-            git checkout ${{ github.ref_name }}
-            git pull --rebase origin ${{ github.ref_name }}
-            git stash pop || true
-
-            git add Numbers3_predictions.csv
-            if git diff --cached --quiet; then
-              echo "No changes to Numbers3_predictions.csv"
-            else
-              git commit -m "Hourly update Numbers3_predictions.csv [skip ci]"
-              git push origin HEAD:${{ github.ref_name }}
-            fi
-
-            if [ $i -lt 3 ]; then
-              echo "Sleeping 1 hour before next push..."
-              sleep 3600
-            fi
-          done
-
       - name: Commit and push remaining prediction results
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
