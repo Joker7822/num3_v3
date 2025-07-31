@@ -1815,7 +1815,7 @@ def evaluate_and_summarize_predictions(
             try:
                 date_str = detail.split(",")[0].replace("☆", "").strip()
                 draw_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-                if draw_date >= datetime(2025, 7, 14).date():
+                if draw_date >= datetime(2025, 7, 1).date():
                     prefix = "☆"
                     lines.append(prefix + detail)
             except Exception:
