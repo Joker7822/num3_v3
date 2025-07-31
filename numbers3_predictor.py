@@ -1808,17 +1808,18 @@ def evaluate_and_summarize_predictions(
         rate = (hit / total * 100) if total > 0 else 0
         lines.append(f"{source}: {hit} / {total} 件 （{rate:.2f}%）")
 
-    # 当選日一覧
+    # 当選日一覧（☆付きのみ表示）
     for i in range(1, 6):
-        lines.append(f"\n当選日一覧予想{i}")
+        lines.append(f"\n当選日一覧予想{i}（☆付きのみ）")
         for detail in results_by_prediction[i]["details"]:
             try:
                 date_str = detail.split(",")[0].replace("☆", "").strip()
                 draw_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-                prefix = "☆" if draw_date >= datetime(2025, 7, 14).date() else ""
-                lines.append(prefix + detail)
+                if draw_date >= datetime(2025, 7, 14).date():
+                    prefix = "☆"
+                    lines.append(prefix + detail)
             except Exception:
-                lines.append(detail)
+                continue  # パースに失敗した行はスキップ
 
     # 出力
     with open(output_txt, "w", encoding="utf-8") as f:
