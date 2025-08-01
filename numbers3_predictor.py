@@ -2712,7 +2712,7 @@ def bulk_predict_all_past_draws():
             continue
 
         result = {"抽せん日": latest_date.strftime("%Y-%m-%d")}
-        for j, pred in enumerate(verified_predictions[:5]):
+        for j, pred in enumerate(verified_predictions[:10]):
             if len(pred) == 3:
                 numbers, conf, origin = pred
             else:
