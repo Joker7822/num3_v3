@@ -1761,8 +1761,8 @@ def evaluate_and_summarize_predictions(
     lines.append(f"最終損益: {'+' if profit >= 0 else '-'}¥{abs(profit):,}")
 
     # 2025-07-01以降の各予測の集計 ===
-    lines.append("\n== 🆕 2025-07-01以降の各予測集計 ==")
-    target_date = datetime(2025, 7, 1).date()
+    lines.append("\n== 🆕 2025-08-01以降の各予測集計 ==")
+    target_date = datetime(2025, 8, 1).date()
 
     for i in range(1, 6):
         subset = eval_df[
@@ -1785,7 +1785,7 @@ def evaluate_and_summarize_predictions(
         cost = total_preds * cost_per_draw
         profit = total_reward - cost
 
-        lines.append(f"\n== 📅 予測{i}（2025-07-01以降） ==")
+        lines.append(f"\n== 📅 予測{i}（2025-08-01以降） ==")
         lines.append(f"ボックス: {box} 件, ストレート: {straight} 件")
         lines.append(f"的中率: {acc:.2f}%")
         lines.append(f"賞金: ¥{total_reward:,}, コスト: ¥{cost:,}, 損益: {'+' if profit >= 0 else '-'}¥{abs(profit):,}")
@@ -1815,7 +1815,7 @@ def evaluate_and_summarize_predictions(
             try:
                 date_str = detail.split(",")[0].replace("☆", "").strip()
                 draw_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-                if draw_date >= datetime(2025, 7, 1).date():
+                if draw_date >= datetime(2025, 8, 1).date():
                     prefix = "☆"
                     lines.append(prefix + detail)
             except Exception:
